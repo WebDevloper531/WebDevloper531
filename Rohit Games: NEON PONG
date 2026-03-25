@@ -286,7 +286,7 @@ def draw_start_screen(tick):
     draw_background()
     # Pulsing title
     pulse = 0.85 + 0.15 * math.sin(tick * 0.05)
-    title = FONT_BIG.render("NEON  PONG", True, CYAN)
+    title = FONT_BIG.render("ROHIT  PONG", True, CYAN)
     tw, th = title.get_size()
     scaled = pygame.transform.smoothscale(title, (int(tw*pulse), int(th*pulse)))
     screen.blit(scaled, (W//2 - scaled.get_width()//2, H//2 - 130))
