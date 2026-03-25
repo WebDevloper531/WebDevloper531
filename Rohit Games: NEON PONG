@@ -1,0 +1,404 @@
+import pygame
+import sys
+import math
+import random
+
+# ─────────────────────────────────────────
+#  RoKi Pong  —  A cyberpunk Pong in pygame
+#  Requires: pip install pygame
+# ─────────────────────────────────────────
+
+pygame.init()
+
+# ── Window ──────────────────────────────
+W, H = 1000, 650
+screen = pygame.display.set_mode((W, H))
+pygame.display.set_caption("⚡ Rohit Games ⚡")
+clock = pygame.time.Clock()
+FPS = 60
+
+# ── Colours ─────────────────────────────
+BLACK      = (0,   0,   0  )
+BG         = (5,   5,   18 )
+CYAN       = (0,   255, 255)
+MAGENTA    = (255, 0,   220)
+YELLOW     = (255, 230, 0  )
+WHITE      = (255, 255, 255)
+GRID_COLOR = (20,  20,  50 )
+P1_COLOR   = CYAN
+P2_COLOR   = MAGENTA
+
+# ── Fonts ───────────────────────────────
+pygame.font.init()
+FONT_BIG   = pygame.font.SysFont("Courier New", 80, bold=True)
+FONT_MED   = pygame.font.SysFont("Courier New", 36, bold=True)
+FONT_SML   = pygame.font.SysFont("Courier New", 22)
+
+# ── Game constants ───────────────────────
+PADDLE_W, PADDLE_H = 14, 100
+BALL_SIZE           = 14
+PADDLE_SPEED        = 6
+WINNING_SCORE       = 7
+
+# ═══════════════════════════════════════
+#  PARTICLE SYSTEM
+# ═══════════════════════════════════════
+class Particle:
+    def __init__(self, x, y, color):
+        angle = random.uniform(0, 2 * math.pi)
+        speed = random.uniform(2, 8)
+        self.x = x
+        self.y = y
+        self.vx = math.cos(angle) * speed
+        self.vy = math.sin(angle) * speed
+        self.life = random.randint(20, 45)
+        self.max_life = self.life
+        self.color = color
+        self.size = random.randint(2, 5)
+
+    def update(self):
+        self.x  += self.vx
+        self.y  += self.vy
+        self.vx *= 0.92
+        self.vy *= 0.92
+        self.life -= 1
+
+    def draw(self, surface):
+        alpha = self.life / self.max_life
+        r, g, b = self.color
+        c = (int(r * alpha), int(g * alpha), int(b * alpha))
+        pygame.draw.circle(surface, c, (int(self.x), int(self.y)), self.size)
+
+
+particles = []
+
+def spawn_particles(x, y, color, n=25):
+    for _ in range(n):
+        particles.append(Particle(x, y, color))
+
+
+# ═══════════════════════════════════════
+#  GLOW HELPER  (layered alpha circles / rects)
+# ═══════════════════════════════════════
+def draw_glow_rect(surface, color, rect, radius=18, layers=5):
+    r, g, b = color
+    for i in range(layers, 0, -1):
+        alpha = int(80 * (i / layers))
+        expand = radius * i // layers
+        gr = pygame.Rect(rect.x - expand, rect.y - expand,
+                         rect.width + expand*2, rect.height + expand*2)
+        glow_surf = pygame.Surface((gr.width, gr.height), pygame.SRCALPHA)
+        glow_surf.fill((r, g, b, alpha))
+        surface.blit(glow_surf, (gr.x, gr.y))
+    pygame.draw.rect(surface, color, rect, border_radius=4)
+
+
+def draw_glow_circle(surface, color, pos, radius, layers=6):
+    r, g, b = color
+    for i in range(layers, 0, -1):
+        alpha = int(110 * (i / layers))
+        extra = int(radius * 0.9 * i / layers)
+        gsurf = pygame.Surface((2*(radius+extra), 2*(radius+extra)), pygame.SRCALPHA)
+        pygame.draw.circle(gsurf, (r, g, b, alpha),
+                           (radius+extra, radius+extra), radius+extra)
+        surface.blit(gsurf, (pos[0]-radius-extra, pos[1]-radius-extra))
+    pygame.draw.circle(surface, color, pos, radius)
+
+
+def draw_glow_text(surface, text, font, color, pos, layers=4):
+    r, g, b = color
+    for i in range(layers, 0, -1):
+        alpha = int(90 * (i / layers))
+        blur  = i * 2
+        s = font.render(text, True, (r, g, b))
+        s.set_alpha(alpha)
+        surface.blit(s, (pos[0] - blur, pos[1] - blur))
+        surface.blit(s, (pos[0] + blur, pos[1] - blur))
+        surface.blit(s, (pos[0] - blur, pos[1] + blur))
+        surface.blit(s, (pos[0] + blur, pos[1] + blur))
+    solid = font.render(text, True, color)
+    surface.blit(solid, pos)
+
+
+# ═══════════════════════════════════════
+#  BACKGROUND  (grid + scanlines)
+# ═══════════════════════════════════════
+def draw_background():
+    screen.fill(BG)
+    # Grid
+    for x in range(0, W, 40):
+        pygame.draw.line(screen, GRID_COLOR, (x, 0), (x, H))
+    for y in range(0, H, 40):
+        pygame.draw.line(screen, GRID_COLOR, (0, y), (W, y))
+    # Centre dashed line
+    dash = 20
+    for y in range(0, H, dash*2):
+        pygame.draw.rect(screen, (40, 40, 80), (W//2 - 2, y, 4, dash))
+    # Scanlines (subtle)
+    scan = pygame.Surface((W, H), pygame.SRCALPHA)
+    for y in range(0, H, 3):
+        pygame.draw.line(scan, (0, 0, 0, 25), (0, y), (W, y))
+    screen.blit(scan, (0, 0))
+
+
+# ═══════════════════════════════════════
+#  GAME STATE
+# ═══════════════════════════════════════
+class Paddle:
+    def __init__(self, x, color):
+        self.rect  = pygame.Rect(x, H//2 - PADDLE_H//2, PADDLE_W, PADDLE_H)
+        self.color = color
+        self.score = 0
+        self.speed = 0          # for trail
+        self.trail = []
+
+    def move(self, up, down):
+        if up:
+            self.rect.y -= PADDLE_SPEED
+        if down:
+            self.rect.y += PADDLE_SPEED
+        self.rect.clamp_ip(pygame.Rect(0, 0, W, H))
+        self.trail.append((self.rect.centerx, self.rect.centery))
+        if len(self.trail) > 8:
+            self.trail.pop(0)
+
+    def draw(self):
+        # Trail
+        for i, (tx, ty) in enumerate(self.trail):
+            alpha_f = i / len(self.trail)
+            r, g, b = self.color
+            tr = (int(r*alpha_f*0.4), int(g*alpha_f*0.4), int(b*alpha_f*0.4))
+            tw = max(2, int(PADDLE_W * alpha_f * 0.5))
+            th = max(4, int(PADDLE_H * alpha_f * 0.6))
+            s = pygame.Surface((tw, th), pygame.SRCALPHA)
+            s.fill((*self.color, int(60 * alpha_f)))
+            screen.blit(s, (tx - tw//2, ty - th//2))
+        # Glow + solid
+        draw_glow_rect(screen, self.color, self.rect, radius=20, layers=6)
+
+
+class Ball:
+    def __init__(self):
+        self.reset()
+        self.trail = []
+
+    def reset(self):
+        self.x  = W // 2
+        self.y  = H // 2
+        angle   = random.uniform(-0.6, 0.6)
+        speed   = 7
+        dirx    = random.choice([-1, 1])
+        self.vx = dirx * speed * math.cos(angle)
+        self.vy = speed * math.sin(angle)
+        self.trail = []
+        self.color = YELLOW
+
+    def update(self, p1, p2):
+        self.trail.append((int(self.x), int(self.y)))
+        if len(self.trail) > 18:
+            self.trail.pop(0)
+
+        self.x += self.vx
+        self.y += self.vy
+
+        # Top / bottom bounce
+        if self.y - BALL_SIZE//2 <= 0:
+            self.y  = BALL_SIZE//2
+            self.vy = abs(self.vy)
+            spawn_particles(int(self.x), int(self.y), self.color, 10)
+        if self.y + BALL_SIZE//2 >= H:
+            self.y  = H - BALL_SIZE//2
+            self.vy = -abs(self.vy)
+            spawn_particles(int(self.x), int(self.y), self.color, 10)
+
+        ball_rect = pygame.Rect(self.x - BALL_SIZE//2, self.y - BALL_SIZE//2,
+                                BALL_SIZE, BALL_SIZE)
+
+        # Paddle collisions
+        for paddle in (p1, p2):
+            if ball_rect.colliderect(paddle.rect):
+                # Reflect
+                rel_y    = (self.y - paddle.rect.centery) / (PADDLE_H / 2)
+                angle    = rel_y * math.radians(60)
+                speed    = min(math.hypot(self.vx, self.vy) + 0.3, 18)
+                if paddle is p1:
+                    self.vx = abs(speed * math.cos(angle))
+                else:
+                    self.vx = -abs(speed * math.cos(angle))
+                self.vy = speed * math.sin(angle)
+                self.color = paddle.color
+                spawn_particles(int(self.x), int(self.y), paddle.color, 30)
+                break
+
+        # Scoring
+        if self.x < 0:
+            p2.score += 1
+            spawn_particles(W//2, H//2, P2_COLOR, 60)
+            return "p2"
+        if self.x > W:
+            p1.score += 1
+            spawn_particles(W//2, H//2, P1_COLOR, 60)
+            return "p1"
+        return None
+
+    def draw(self):
+        # Trail
+        for i, (tx, ty) in enumerate(self.trail):
+            frac = i / len(self.trail)
+            r, g, b = self.color
+            size = max(2, int(BALL_SIZE * frac * 0.8))
+            alpha = int(180 * frac)
+            s = pygame.Surface((size*2, size*2), pygame.SRCALPHA)
+            pygame.draw.circle(s, (r, g, b, alpha), (size, size), size)
+            screen.blit(s, (tx - size, ty - size))
+        # Glow ball
+        draw_glow_circle(screen, self.color, (int(self.x), int(self.y)),
+                         BALL_SIZE//2, layers=7)
+
+
+# ═══════════════════════════════════════
+#  HUD
+# ═══════════════════════════════════════
+def draw_hud(p1, p2, flash_timer):
+    # Scores
+    s1 = FONT_BIG.render(str(p1.score), True, P1_COLOR)
+    s2 = FONT_BIG.render(str(p2.score), True, P2_COLOR)
+    screen.blit(s1, (W//4 - s1.get_width()//2, 20))
+    screen.blit(s2, (3*W//4 - s2.get_width()//2, 20))
+
+    # Labels
+    l1 = FONT_SML.render("P1  [W/S]", True, P1_COLOR)
+    l2 = FONT_SML.render("[↑/↓]  P2", True, P2_COLOR)
+    screen.blit(l1, (18, H - 34))
+    screen.blit(l2, (W - l2.get_width() - 18, H - 34))
+
+    # Flash on score
+    if flash_timer > 0:
+        flash_surf = pygame.Surface((W, H), pygame.SRCALPHA)
+        flash_surf.fill((255, 255, 255, min(120, flash_timer * 6)))
+        screen.blit(flash_surf, (0, 0))
+
+
+# ═══════════════════════════════════════
+#  SCREENS
+# ═══════════════════════════════════════
+def draw_start_screen(tick):
+    draw_background()
+    # Pulsing title
+    pulse = 0.85 + 0.15 * math.sin(tick * 0.05)
+    title = FONT_BIG.render("NEON  PONG", True, CYAN)
+    tw, th = title.get_size()
+    scaled = pygame.transform.smoothscale(title, (int(tw*pulse), int(th*pulse)))
+    screen.blit(scaled, (W//2 - scaled.get_width()//2, H//2 - 130))
+
+    draw_glow_text(screen, "P1: W / S       P2: ↑ / ↓",
+                   FONT_SML, WHITE, (W//2 - 175, H//2 + 10))
+    draw_glow_text(screen, "First to 7 wins!",
+                   FONT_SML, YELLOW, (W//2 - 110, H//2 + 50))
+
+    blink = "▶  PRESS  SPACE  TO  START  ◀"
+    if (tick // 30) % 2 == 0:
+        draw_glow_text(screen, blink, FONT_MED, MAGENTA,
+                       (W//2 - FONT_MED.size(blink)[0]//2, H//2 + 110))
+
+
+def draw_win_screen(winner_name, color, tick):
+    draw_background()
+    draw_glow_text(screen, f"{winner_name}  WINS!", FONT_BIG, color,
+                   (W//2 - FONT_BIG.size(f"{winner_name}  WINS!")[0]//2, H//2 - 90))
+    blink = "SPACE to play again   |   ESC to quit"
+    if (tick // 30) % 2 == 0:
+        draw_glow_text(screen, blink, FONT_SML, WHITE,
+                       (W//2 - FONT_SML.size(blink)[0]//2, H//2 + 30))
+
+
+# ═══════════════════════════════════════
+#  MAIN LOOP
+# ═══════════════════════════════════════
+def new_game():
+    p1   = Paddle(30, P1_COLOR)
+    p2   = Paddle(W - 30 - PADDLE_W, P2_COLOR)
+    ball = Ball()
+    return p1, p2, ball
+
+
+def main():
+    state        = "start"   # start | playing | goal_pause | win
+    p1, p2, ball = new_game()
+    flash_timer  = 0
+    goal_pause   = 0
+    winner       = None
+    tick         = 0
+
+    while True:
+        tick += 1
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    pygame.quit(); sys.exit()
+                if event.key == pygame.K_SPACE:
+                    if state in ("start", "win"):
+                        p1, p2, ball = new_game()
+                        state = "playing"
+
+        keys = pygame.key.get_pressed()
+
+        # ── UPDATE ───────────────────────────
+        if state == "playing":
+            p1.move(keys[pygame.K_w], keys[pygame.K_s])
+            p2.move(keys[pygame.K_UP], keys[pygame.K_DOWN])
+            result = ball.update(p1, p2)
+            if result:
+                flash_timer = 20
+                goal_pause  = 60
+                state = "goal_pause"
+                if p1.score >= WINNING_SCORE:
+                    winner = ("PLAYER  1", P1_COLOR)
+                elif p2.score >= WINNING_SCORE:
+                    winner = ("PLAYER  2", P2_COLOR)
+
+        elif state == "goal_pause":
+            goal_pause -= 1
+            if goal_pause <= 0:
+                if winner:
+                    state = "win"
+                else:
+                    ball.reset()
+                    state = "playing"
+
+        # Particles always update
+        for p in particles[:]:
+            p.update()
+            if p.life <= 0:
+                particles.remove(p)
+
+        if flash_timer > 0:
+            flash_timer -= 1
+
+        # ── DRAW ─────────────────────────────
+        if state == "start":
+            draw_start_screen(tick)
+        elif state == "win":
+            draw_win_screen(*winner, tick)
+            for p in particles:
+                p.draw(screen)
+        else:
+            draw_background()
+            p1.draw()
+            p2.draw()
+            ball.draw()
+            for p in particles:
+                p.draw(screen)
+            draw_hud(p1, p2, flash_timer)
+            if state == "goal_pause":
+                msg = FONT_MED.render("GOAL!", True, YELLOW)
+                screen.blit(msg, (W//2 - msg.get_width()//2, H//2 - 30))
+
+        pygame.display.flip()
+        clock.tick(FPS)
+
+
+if __name__ == "__main__":
+    main()
